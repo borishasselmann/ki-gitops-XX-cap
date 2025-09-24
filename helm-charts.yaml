@@ -1,0 +1,14 @@
+charts:
+  ############################
+  ## Local Charts
+  ############################
+  - name: <myapp>
+    repo: ./charts/<myapp>
+    harbor_project: <costcenter>-<myapp>
+  ############################
+  ## External Charts
+  ############################
+  # - name: nginx
+  #   version: 18.1.12
+  #   repo: oci://registry-1.docker.io/bitnamicharts
+  #   harbor_project: <costcenter>-<myapp>

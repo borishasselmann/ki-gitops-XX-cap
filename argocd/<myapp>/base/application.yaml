@@ -1,0 +1,56 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: to-be-patched
+  annotations:
+    pref.argocd.argoproj.io/default-view: tree
+    pref.argocd.argoproj.io/default-pod-sort: parentResource
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: <costcenter>-<myapp>-project
+  source:
+    chart: <myapp>
+    targetRevision: 0.1.0
+    helm:
+      releaseName: <myapp>
+
+      valuesObject:
+        ingress:
+          enabled: true
+          className: "nginx"
+          annotations:
+            ingress.kubernetes.io/force-ssl-redirect: "true"
+        podLabels:
+          gitops.swissgrid.ch/allow-ingress: "true"
+        service:
+          port: 8080
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          runAsGroup: 1000
+          seccompProfile:
+            type: RuntimeDefault
+
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: to-be-patched
+  syncPolicy:
+    automated:
+      #allowEmpty: false # default behaviour
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - Validate=true
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m

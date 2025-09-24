@@ -1,0 +1,10 @@
+{
+  "postCreateCommand": "pipx install pre-commit==4.2.0 && pre-commit install --install-hooks && go install github.com/norwoodj/helm-docs/cmd/helm-docs@v1.14.2",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools"
+      ]
+    }
+  }
+}

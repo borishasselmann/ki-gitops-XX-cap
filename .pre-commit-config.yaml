@@ -1,0 +1,50 @@
+---
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks.git
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+        exclude_types: ['markdown']
+        stages: [pre-commit]
+      - id: trailing-whitespace
+        exclude_types: ['markdown']
+        stages: [pre-commit]
+      - id: mixed-line-ending
+        stages: [pre-commit]
+      - id: fix-byte-order-marker
+        stages: [pre-commit]
+      - id: check-executables-have-shebangs
+        stages: [pre-commit]
+      - id: check-merge-conflict
+        stages: [pre-commit]
+      - id: check-symlinks
+        stages: [pre-commit]
+  - repo: https://github.com/zricethezav/gitleaks.git
+    rev: v8.27.2
+    hooks:
+      - id: gitleaks
+        stages: [pre-commit]
+  - repo: https://github.com/norwoodj/helm-docs
+    rev: v1.14.2
+    hooks:
+      - id: helm-docs
+        args:
+          # Make the tool search for charts only under the `example-charts` directory
+          - --chart-search-root=./charts/
+
+          # The `./` makes it relative to the chart-search-root set above
+          - --template-files=./_templates.gotmpl
+
+          # Repeating the flag adds this to the list, now [./_templates.gotmpl, README.md.gotmpl]
+          # A base filename makes it relative to each chart directory found
+          - --template-files=README.md.gotmpl
+
+  - repo: https://github.com/bridgecrewio/checkov.git
+    rev: 3.2.352
+    hooks:
+      - id: checkov_container
+        args:
+          - --framework=dockerfile
+          - --file=ci/Dockerfile
+          - --skip-check=CKV_DOCKER_2,CKV_DOCKER_3
+        files: ci/Dockerfile

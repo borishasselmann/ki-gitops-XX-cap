@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: to-be-patched
+spec:
+  destination:
+    namespace: <costcenter>-<myapp>-test
+  source:
+    repoURL: harbor.swg-test-01-aks-base-01.kpt.swissgrid.ch/<costcenter>-<myapp>/helm
+    helm:
+      valuesObject:
+        image:
+          repository: harbor.swg-test-01-aks-base-01.kpt.swissgrid.ch/<costcenter>-<myapp>/<myapp>
+        #the tag can later be changed to a specific version taht is in the repo harbor
+          tag: "latest"
+        ingress:
+          hosts:
+            - host: <myapp>.swg-test-01-aks-gp-01.kpt.swissgrid.ch
+              paths:
+                - path: /
+                  pathType: ImplementationSpecific
+          tls:
+            - hosts:
+                - <myapp>.swg-test-01-aks-gp-01.kpt.swissgrid.ch
+              secretName: <myapp>-tls

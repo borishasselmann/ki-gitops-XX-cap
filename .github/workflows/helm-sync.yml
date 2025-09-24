@@ -1,0 +1,182 @@
+name: Push Helm Charts to Harbor
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  HELM_FLAGS: "--registry-config /tmp/.config/helm/registry/config.json --repository-cache /tmp/.cache/helm/repository --repository-config /tmp/.config/helm/repositories.yaml"
+
+jobs:
+  push-charts:
+    strategy:
+      matrix:
+        include:
+          - environment: test
+            run: swg-test-01-aks-base-01
+            registry: harbor.swg-test-01-aks-base-01.kpt.swissgrid.ch
+          - environment: int
+            run: swg-int-01-aks-base-01
+            registry: harbor.swg-int-01-aks-base-01.kpt.swissgrid.ch
+          - environment: prod
+            run: swg-prod-01-aks-base-01
+            registry: harbor.swg-prod-01-aks-base-01.kpt.swissgrid.ch
+
+    runs-on: ${{ matrix.run }}
+
+    container:
+      image: ${{ matrix.registry }}/kpt-helm/helm:1.2.0 # not rootless
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Set default branch name to main
+        run: git config --global init.defaultBranch main
+
+      - name: Add current directory to safe.directory
+        run: git config --global --add safe.directory /__w/kpt-gitops-<costcenter>-<myapp>/kpt-gitops-<costcenter>-<myapp>
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          set-safe-directory: false
+
+      - name: Configure Helm
+        env:
+          HARBOR_USERNAME: ${{ matrix.environment == 'test' && secrets.TEST_HARBOR_USERNAME || matrix.environment == 'int' && secrets.INT_HARBOR_USERNAME || secrets.PROD_HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ matrix.environment == 'test' && secrets.TEST_HARBOR_PASSWORD || matrix.environment == 'int' && secrets.INT_HARBOR_PASSWORD || secrets.PROD_HARBOR_PASSWORD }}
+          REGISTRY: ${{ matrix.registry }}
+        run: |
+          helm ${HELM_FLAGS} registry login $REGISTRY --username $HARBOR_USERNAME --password $HARBOR_PASSWORD
+
+      - name: Process and push Helm charts
+        env:
+          REGISTRY: ${{ matrix.registry }}
+        run: |
+          set -euo pipefail
+
+          yq e '.charts[] | .name + " " + (.version // "local") + " " + .repo + " " + .harbor_project' helm-charts.yaml | while read -r name version repo harbor_project; do
+            echo "===================="
+            echo "Processing chart: $name ($version) from $repo destined for $harbor_project"
+            repo="${repo%/}" # remove trailing slash if any
+
+            # If local chart, use its version
+            if [[ -d "$repo" && -f "$repo/Chart.yaml" ]]; then
+              local_version=$(yq e '.version' "$repo/Chart.yaml")
+              version="$local_version"
+              echo "Local chart detected. Using version: $version"
+            fi
+
+            # Check if chart already exists in target registry
+            if oras manifest fetch-config $REGISTRY/$harbor_project/$name:$version &>/dev/null; then
+              echo "Chart $name version $version already exists in $harbor_project, skipping..."
+              continue
+            fi
+
+            # Fetch or package the chart
+            if [[ "$repo" == oci://* ]]; then
+              helm ${HELM_FLAGS} pull "$repo/$name" --version "$version"
+            elif [[ "$repo" == http*://* ]]; then
+              helm ${HELM_FLAGS} repo add temp-repo "$repo"
+              helm ${HELM_FLAGS} pull "temp-repo/$name" --version "$version"
+              helm ${HELM_FLAGS} repo remove temp-repo
+            elif [[ -d "$repo" && -f "$repo/Chart.yaml" ]]; then
+              # Add all repositories from dependencies dynamically
+              chart_name=$(basename "$repo")
+              repo_added=false
+
+              # Save dependency repos to a temp file to process outside the subshell
+              yq e '.dependencies[] | select(.repository != null) | .repository' "$repo/Chart.yaml" > /tmp/dependency_repos.txt
+
+              if [ -s /tmp/dependency_repos.txt ]; then
+                while read -r dependency_repo; do
+                  unique_repo_name="${chart_name}-$(echo "$dependency_repo" | md5sum | cut -d' ' -f1)"
+                  echo "Adding unique Helm repository: $unique_repo_name for $dependency_repo"
+                  if helm ${HELM_FLAGS} repo add "$unique_repo_name" "$dependency_repo"; then
+                    repo_added=true
+                  fi
+                done < /tmp/dependency_repos.txt
+
+                # Only update repositories if at least one was added
+                if [ "$repo_added" = true ]; then
+                  helm ${HELM_FLAGS} repo update
+                fi
+              fi
+
+              # Build dependencies and package the chart
+              helm ${HELM_FLAGS} dependency build "$repo"
+              helm ${HELM_FLAGS} package "$repo"
+
+              # Clean up all temporary repositories
+              yq e '.dependencies[] | select(.repository != null) | .repository' "$repo/Chart.yaml" > /tmp/dependency_repos.txt
+
+              if [ -s /tmp/dependency_repos.txt ]; then
+                while read -r dependency_repo; do
+                  unique_repo_name="${chart_name}-$(echo "$dependency_repo" | md5sum | cut -d' ' -f1)"
+                  echo "Removing unique Helm repository: $unique_repo_name"
+                  helm ${HELM_FLAGS} repo remove "$unique_repo_name" || true
+                done < /tmp/dependency_repos.txt
+              fi
+            else
+              echo "Unsupported repo format: $repo"
+              continue
+            fi
+
+            # Identify the downloaded package
+            chart_package="$(ls ${name}-${version}*.tgz 2>/dev/null || true)"
+            if [[ -z "$chart_package" ]]; then
+              # If no exact match, try a looser match
+              chart_package="$(ls ${name}*.tgz 2>/dev/null || true)"
+            fi
+
+            if [[ -z "$chart_package" ]]; then
+              echo "No chart package found for $name:$version"
+              continue
+            fi
+
+            # Check if we need to sanitize the version (remove + and everything after)
+            if [[ "$chart_package" == *"+"* ]]; then
+              echo "Detected '+' in chart package name. Extracting and sanitizing version."
+              temp_dir=$(mktemp -d)
+              tar -xzf "$chart_package" -C "$temp_dir"
+              chart_dir=$(find "$temp_dir" -mindepth 1 -maxdepth 1 -type d)
+
+              chart_version=$(yq e '.version' "$chart_dir/Chart.yaml")
+              # Remove the plus and everything after
+              sanitized_version="${chart_version%%+*}"
+              if [[ "$sanitized_version" != "$chart_version" ]]; then
+                echo "Sanitizing version: $chart_version -> $sanitized_version"
+                yq e -i ".version = \"$sanitized_version\"" "$chart_dir/Chart.yaml"
+              fi
+
+              # Re-package the chart with the sanitized version
+              (cd "$temp_dir" && helm ${HELM_FLAGS} package "$(basename "$chart_dir")")
+              new_package="$(ls "$temp_dir"/*.tgz)"
+              mv "$new_package" ./
+              rm -rf "$temp_dir" "$chart_package"
+              chart_package="$(basename "$new_package")"
+              version="$sanitized_version"
+            fi
+
+            # Push the chart
+            echo "Pushing $name:$version to oci://$REGISTRY/$harbor_project"
+            if helm ${HELM_FLAGS} push "$chart_package" "oci://$REGISTRY/$harbor_project"; then
+              echo "Successfully pushed $name version $version to $harbor_project"
+            else
+              echo "Failed to push $name version $version to $harbor_project"
+              exit 1
+            fi
+
+            rm -f "$chart_package"
+            echo "Finished processing $name:$version"
+            echo "===================="
+          done
+
+      - name: Check for failures
+        if: failure()
+        run: |
+          echo "Some charts failed to process. Check the logs for details."
+          exit 1

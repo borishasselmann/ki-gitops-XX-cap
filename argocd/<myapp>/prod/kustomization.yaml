@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: <costcenter>-<myapp>-prod
+resources:
+- ../base/
+labels:
+- includeSelectors: true
+  pairs:
+    # Patched on stage above // wont work if addtionall resources are added on this level
+    #gitops.swissgrid.ch/customer: ""
+    gitops.swissgrid.ch/stage: "prod"
+patches:
+  - path: application.yaml
+    target:
+      kind: Application
+  - target:
+      kind: Application
+      name: .*
+    patch: |-
+      - op: replace
+        path: /metadata/name
+        value: <costcenter>-<myapp>-prod
